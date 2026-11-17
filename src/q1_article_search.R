@@ -47,7 +47,7 @@ fn_extract_unique_atomic_values =
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 # Fetch all OpenAlex sources via cursor pagination
-fetch_all_oa_sources <- function(mailto = NULL) {
+fetch_all_oa_sources <- function(mailto = NULL, api_key = NULL) {
   results <- list()
   cursor <- "*"
   pb <- NULL
@@ -55,13 +55,18 @@ fetch_all_oa_sources <- function(mailto = NULL) {
   message("Fetching source metadata from OpenAlex...")
   
   repeat {
-    resp <- request("https://api.openalex.org/sources") |>
+    req <- request("https://api.openalex.org/sources") |>
       req_url_query(
-        select   = "id,display_name,type",
+        select     = "id,display_name,type",
         `per-page` = 200,
-        cursor   = cursor,
-        mailto   = mailto
+        cursor     = cursor,
+        mailto     = if (!is.null(mailto)  && nzchar(mailto))  mailto  else NULL,
+        api_key    = if (!is.null(api_key) && nzchar(api_key)) api_key else NULL
       ) |>
+      req_throttle(rate = 8 / 1) |>   # Stay safely below OpenAlex's 10 req/sec limit
+      req_retry(max_tries = 3)
+    
+    resp <- req |>
       req_perform() |>
       resp_body_json()
     
@@ -173,7 +178,25 @@ library(sjrdata)
 # Set Working Directory ---------------------------------------------------
 setwd(paste0(this.dir(), "/.."))
 
-# Configuration ------------------------------------------------------ ----
+# User-Defined Parameters -------------------------------------------- ----
+# Set email
+while (TRUE) {
+  udp_openalex_email <- trimws(smart_readline(prompt = "Enter your email (for OpenAlex polite pool): "))
+  if (grepl("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", udp_openalex_email)) {
+    break
+  } else {
+    message("Invalid email format. Please enter a valid email address (e.g., name@domain.com).")
+  }
+}
+
+# Optional: Free OpenAlex API key (prevents 401/rate-limit errors on large downloads)
+udp_openalex_apikey <- trimws(smart_readline(prompt = "Enter your OpenAlex API key (or press Enter to skip): "))
+
+options(openalexR.mailto = udp_openalex_email)
+if (nzchar(udp_openalex_apikey)) {
+  options(openalexR.apikey = udp_openalex_apikey)
+}
+
 sjr_refresh_months = 6
 
 # Set Default Values and Interactive Input --------------------------- ----
@@ -311,7 +334,10 @@ if(
   Sys.Date() - as.Date(most_recent_date, format = "%Y%m%d") > 30.437 * sjr_refresh_months |
   abs(n_oa_sources_cache - n_oa_sources) > (0.10 * n_oa_sources)
 ){
-  oa_source_id = fetch_all_oa_sources(mailto = "your@email.com")
+  oa_source_id <- fetch_all_oa_sources(
+    mailto  = udp_openalex_email,
+    api_key = udp_openalex_apikey
+  )
   
   write.csv(
     oa_source_id,
